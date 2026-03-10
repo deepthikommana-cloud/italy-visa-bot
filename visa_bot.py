@@ -2,7 +2,7 @@ import os
 import requests
 import time
 
-# Environment variables from Railway
+# Get secrets from Railway environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
@@ -56,7 +56,8 @@ def check_site():
             resp = requests.get(url, headers=HEADERS, timeout=15)
             page = resp.text.lower()
 
-            if "no appointments available" in page or "non ci sono appuntamenti disponibili" in page:
+            if "no appointments available" in page \
+               or "non ci sono appuntamenti disponibili" in page:
                 status = "none"
             else:
                 status = "possible"
@@ -83,3 +84,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
