@@ -37,7 +37,7 @@ def check_site():
 
 def main():
     # TEMPORARY TEST MESSAGE
-    send_alert()
+    #send_alert()
     while True:
         check_site()
         time.sleep(180)  # check every 3 minutes
