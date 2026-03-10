@@ -1,10 +1,14 @@
 import requests
 import time
+import os
 
-# ====== CONFIGURE ======
-TELEGRAM_TOKEN = "8790569310:AAHe7f92APUr3FC3bGUI6sIHvibtnWgOzhQ"  # Your BotFather token
-CHAT_ID = 8659387830  # Your numeric chat ID from Telegram
-# =======================
+# ====== CONFIGURE VIA ENVIRONMENT VARIABLES ======
+# Set these in Railway (or your cloud service)
+# TELEGRAM_TOKEN = your BotFather token
+# CHAT_ID = your numeric chat ID
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = int(os.getenv("CHAT_ID"))
+# ==================================================
 
 # Italy appointment page URL
 URL = "https://prenotami.esteri.it/"
@@ -25,7 +29,7 @@ def check_site():
     """Check the Italy appointment page for availability."""
     try:
         response = requests.get(URL)
-        # Basic check: if "No appointments available" is NOT in the page, send alert
+        # If "No appointments available" is NOT in the page, send alert
         if "No appointments available" not in response.text:
             send_alert()
         else:
@@ -41,4 +45,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-Jot something down
