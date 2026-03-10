@@ -91,37 +91,23 @@ def detect_state_from_text(text: str) -> str:
         "choose date",
     ]
 
-    for p in pending_patterns:
-        if p in t:
+    for pattern in pending_patterns:
+        if pattern in t:
             return "pending_confirmation"
 
-    for p in waitlist_patterns:
-        if p in t:
+    for pattern in waitlist_patterns:
+        if pattern in t:
             return "waitlist"
 
-    for p in no_slot_patterns:
-        if p in t:
+    for pattern in no_slot_patterns:
+        if pattern in t:
             return "none"
 
-    for p in positive_patterns:
-        if p in t:
+    for pattern in positive_patterns:
+        if pattern in t:
             return "possible"
 
     return "unknown"
-
-
-def try_click_if_exists(page, selectors):
-    for selector in selectors:
-        try:
-            print(f"Trying selector: {selector}", flush=True)
-            locator = page.locator(selector).first
-            if locator.is_visible(timeout=2000):
-                locator.click(timeout=3000)
-                print(f"Clicked selector: {selector}", flush=True)
-                return True
-        except Exception as e:
-            print(f"Selector failed: {selector} | {e}", flush=True)
-    return False
 
 
 def accept_cookies_if_present(page):
@@ -131,10 +117,36 @@ def accept_cookies_if_present(page):
             print(f"Trying cookie button: {label}", flush=True)
             page.get_by_role("button", name=label).click(timeout=2000)
             print(f"Clicked cookie button: {label}", flush=True)
+            page.wait_for_timeout(1500)
             return
         except Exception:
             pass
     print("No cookie popup handled", flush=True)
+
+
+def open_login_form_if_needed(page):
+    login_targets = [
+        'a:has-text("Login")',
+        'a:has-text("Accedi")',
+        'button:has-text("Login")',
+        'button:has-text("Accedi")',
+        'text=Login',
+        'text=Accedi',
+    ]
+
+    for target in login_targets:
+        try:
+            print(f"Trying login entry target: {target}", flush=True)
+            locator = page.locator(target).first
+            locator.wait_for(state="visible", timeout=3000)
+            locator.click(timeout=3000)
+            print(f"Clicked login entry target: {target}", flush=True)
+            page.wait_for_timeout(3000)
+            return
+        except Exception:
+            pass
+
+    print("No separate login button found; continuing on current page", flush=True)
 
 
 def fill_login_form(page):
@@ -142,6 +154,8 @@ def fill_login_form(page):
         'input[name="Email"]',
         'input[name="email"]',
         'input[type="email"]',
+        'input[autocomplete="username"]',
+        'input[type="text"]',
         '#Email',
         '#email',
     ]
@@ -150,9 +164,12 @@ def fill_login_form(page):
         'input[name="Password"]',
         'input[name="password"]',
         'input[type="password"]',
+        'input[autocomplete="current-password"]',
         '#Password',
         '#password',
     ]
+
+    page.wait_for_timeout(5000)
 
     email_ok = False
     password_ok = False
@@ -160,7 +177,9 @@ def fill_login_form(page):
     for selector in email_selectors:
         try:
             print(f"Trying email selector: {selector}", flush=True)
-            page.locator(selector).first.fill(PRENOTAMI_EMAIL, timeout=3000)
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=8000)
+            locator.fill(PRENOTAMI_EMAIL, timeout=5000)
             print(f"Filled email selector: {selector}", flush=True)
             email_ok = True
             break
@@ -170,7 +189,9 @@ def fill_login_form(page):
     for selector in password_selectors:
         try:
             print(f"Trying password selector: {selector}", flush=True)
-            page.locator(selector).first.fill(PRENOTAMI_PASSWORD, timeout=3000)
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=8000)
+            locator.fill(PRENOTAMI_PASSWORD, timeout=5000)
             print(f"Filled password selector: {selector}", flush=True)
             password_ok = True
             break
@@ -178,6 +199,12 @@ def fill_login_form(page):
             print(f"Password selector failed: {selector} | {e}", flush=True)
 
     if not email_ok or not password_ok:
+        try:
+            print(f"Page title: {page.title()}", flush=True)
+        except Exception:
+            pass
+        print(f"Current URL: {page.url}", flush=True)
+        print(f"Page snippet: {normalize_text(page.content())[:1200]}", flush=True)
         raise RuntimeError("Could not find login fields.")
 
 
@@ -206,6 +233,20 @@ def submit_login(page):
             print(f"Submit button label failed: {label} | {e}", flush=True)
 
     raise RuntimeError("Could not submit login form.")
+
+
+def try_click_if_exists(page, selectors):
+    for selector in selectors:
+        try:
+            print(f"Trying selector: {selector}", flush=True)
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=3000)
+            locator.click(timeout=3000)
+            print(f"Clicked selector: {selector}", flush=True)
+            return True
+        except Exception as e:
+            print(f"Selector failed: {selector} | {e}", flush=True)
+    return False
 
 
 def open_san_francisco_visa_service(page) -> str:
@@ -246,6 +287,7 @@ def open_san_francisco_visa_service(page) -> str:
         print("Visa-related keywords found on services page without clicking", flush=True)
         return page.content()
 
+    print(f"Services page snippet: {services_text[:1200]}", flush=True)
     raise RuntimeError("Could not find a visa-related service on the Services page.")
 
 
@@ -275,10 +317,13 @@ def login_and_check() -> str:
         try:
             print("Opening login page", flush=True)
             page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(5000)
 
             print("Handling cookie popup", flush=True)
             accept_cookies_if_present(page)
+
+            print("Opening login form if needed", flush=True)
+            open_login_form_if_needed(page)
 
             print("Filling login form", flush=True)
             fill_login_form(page)
@@ -288,15 +333,16 @@ def login_and_check() -> str:
 
             print("Waiting for post-login page", flush=True)
             page.wait_for_load_state("networkidle", timeout=60000)
-            page.wait_for_timeout(4000)
+            page.wait_for_timeout(5000)
 
             current_url = page.url.lower()
             current_text = normalize_text(page.content())
 
             print(f"Current URL after login: {current_url}", flush=True)
+            print(f"Post-login page snippet: {current_text[:1200]}", flush=True)
 
             if "login" in current_url and any(
-                x in current_text for x in ["invalid", "wrong", "errore"]
+                x in current_text for x in ["invalid", "wrong", "errore", "password"]
             ):
                 raise RuntimeError("Login failed. Check email/password.")
 
