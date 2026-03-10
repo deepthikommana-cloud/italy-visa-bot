@@ -39,8 +39,7 @@ def check_site():
 
 def main():
     """Run the bot continuously every 3 minutes."""
-    send_alert()
-    while True:
+while True:
         check_site()
         time.sleep(180)  # Wait 3 minutes between checks
 
