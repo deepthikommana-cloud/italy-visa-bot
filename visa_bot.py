@@ -1,14 +1,10 @@
 import os
 import time
 import traceback
-import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
 PRENOTAMI_EMAIL = os.getenv("PRENOTAMI_EMAIL")
 PRENOTAMI_PASSWORD = os.getenv("PRENOTAMI_PASSWORD")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "180"))
 
 LOGIN_URL = "https://prenotami.esteri.it/"
 SERVICES_URL = "https://prenotami.esteri.it/Services"
@@ -19,168 +15,79 @@ USER_AGENT = (
     "Chrome/122.0.0.0 Safari/537.36"
 )
 
-last_state = "unknown"
+
+def log(msg: str):
+    print(msg, flush=True)
 
 
 def validate_env():
-    required = {
-        "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
-        "CHAT_ID": CHAT_ID,
-        "PRENOTAMI_EMAIL": PRENOTAMI_EMAIL,
-        "PRENOTAMI_PASSWORD": PRENOTAMI_PASSWORD,
-    }
-    missing = [k for k, v in required.items() if not v]
+    missing = []
+    if not PRENOTAMI_EMAIL:
+        missing.append("PRENOTAMI_EMAIL")
+    if not PRENOTAMI_PASSWORD:
+        missing.append("PRENOTAMI_PASSWORD")
     if missing:
         raise RuntimeError("Missing environment variables: " + ", ".join(missing))
-
-
-def send_telegram(message: str):
-    try:
-        response = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            params={"chat_id": CHAT_ID, "text": message},
-            timeout=15,
-        )
-        print(f"Telegram status: {response.status_code}", flush=True)
-        print(f"Telegram response: {response.text}", flush=True)
-    except Exception as e:
-        print(f"Telegram error: {e}", flush=True)
 
 
 def normalize_text(text: str) -> str:
     return " ".join(text.lower().split())
 
 
-def detect_state_from_text(text: str) -> str:
-    t = normalize_text(text)
+def dump_page_debug(page, label: str):
+    log(f"\n--- {label} ---")
+    try:
+        log(f"{label} URL: {page.url}")
+    except Exception as e:
+        log(f"{label} URL error: {e}")
 
-    pending_patterns = [
-        "confirm your reservation",
-        "reservation pending",
-        "conferma la prenotazione",
-        "prenotazione da confermare",
-        "mandatory appointment confirmation",
-    ]
+    try:
+        log(f"{label} TITLE: {page.title()}")
+    except Exception as e:
+        log(f"{label} TITLE error: {e}")
 
-    waitlist_patterns = [
-        "waiting list",
-        "lista d'attesa",
-        "join the waiting list",
-        "entra in lista d'attesa",
-    ]
+    try:
+        snippet = normalize_text(page.content())[:2000]
+        log(f"{label} HTML SNIPPET: {snippet}")
+    except Exception as e:
+        log(f"{label} HTML error: {e}")
 
-    no_slot_patterns = [
-        "no appointments available",
-        "non ci sono appuntamenti disponibili",
-        "all appointments for this service are booked",
-        "non sono disponibili appuntamenti",
-        "fully booked",
-        "there are no available appointments",
-    ]
+    try:
+        path = f"{label.lower().replace(' ', '_')}.png"
+        page.screenshot(path=path, full_page=True)
+        log(f"{label} screenshot saved: {path}")
+    except Exception as e:
+        log(f"{label} screenshot error: {e}")
 
-    positive_patterns = [
-        "select a date",
-        "calendar",
-        "book",
-        "prenota",
-        "available appointments",
-        "date available",
-        "giorni disponibili",
-        "date disponibili",
-        "choose day",
-        "choose date",
-    ]
 
-    for pattern in pending_patterns:
-        if pattern in t:
-            return "pending_confirmation"
-
-    for pattern in waitlist_patterns:
-        if pattern in t:
-            return "waitlist"
-
-    for pattern in no_slot_patterns:
-        if pattern in t:
-            return "none"
-
-    for pattern in positive_patterns:
-        if pattern in t:
-            return "possible"
-
-    return "unknown"
+def list_frames(page):
+    log("\n--- FRAMES ---")
+    try:
+        for i, frame in enumerate(page.frames):
+            try:
+                log(f"Frame {i}: {frame.url}")
+            except Exception:
+                log(f"Frame {i}: <url unavailable>")
+    except Exception as e:
+        log(f"Frame listing error: {e}")
 
 
 def accept_cookies_if_present(page):
     labels = ["Accept", "I Agree", "Accetta", "OK", "Accept all"]
     for label in labels:
         try:
-            print(f"Trying cookie button: {label}", flush=True)
+            log(f"Trying cookie button: {label}")
             page.get_by_role("button", name=label).click(timeout=2000)
-            print(f"Clicked cookie button: {label}", flush=True)
+            log(f"Clicked cookie button: {label}")
             page.wait_for_timeout(1500)
             return
         except Exception:
             pass
-    print("No cookie popup handled", flush=True)
+    log("No cookie popup handled")
 
 
-def dump_page_debug(page, label="PAGE"):
-    try:
-        print(f"{label} URL: {page.url}", flush=True)
-    except Exception:
-        pass
-
-    try:
-        print(f"{label} TITLE: {page.title()}", flush=True)
-    except Exception:
-        pass
-
-    try:
-        snippet = normalize_text(page.content())[:1500]
-        print(f"{label} SNIPPET: {snippet}", flush=True)
-    except Exception as e:
-        print(f"{label} SNIPPET ERROR: {e}", flush=True)
-
-
-def get_login_capable_frame(page):
-    print("Scanning main page and frames for login fields", flush=True)
-
-    candidates = [page]
-    try:
-        candidates.extend(page.frames)
-    except Exception:
-        pass
-
-    for idx, frame in enumerate(candidates):
-        try:
-            url = frame.url
-        except Exception:
-            url = "unknown"
-
-        print(f"Checking frame {idx} | URL: {url}", flush=True)
-
-        selectors = [
-            'input[type="password"]',
-            'input[type="email"]',
-            'input[name="Email"]',
-            'input[name="email"]',
-            'input[autocomplete="username"]',
-        ]
-
-        for selector in selectors:
-            try:
-                loc = frame.locator(selector).first
-                if loc.count() > 0:
-                    print(f"Found login-related selector in frame {idx}: {selector}", flush=True)
-                    return frame
-            except Exception:
-                pass
-
-    return page
-
-
-def open_login_form_if_needed(context, page):
-    login_targets = [
+def click_login_and_capture(context, page):
+    targets = [
         'a:has-text("Login")',
         'a:has-text("Accedi")',
         'button:has-text("Login")',
@@ -189,44 +96,74 @@ def open_login_form_if_needed(context, page):
         'text=Accedi',
     ]
 
-    before_pages = len(context.pages)
-    print(f"Pages before login click: {before_pages}", flush=True)
-
-    for target in login_targets:
+    for target in targets:
         try:
-            print(f"Trying login entry target: {target}", flush=True)
+            log(f"Trying login target: {target}")
             locator = page.locator(target).first
-            locator.wait_for(state="visible", timeout=3000)
+            locator.wait_for(state="visible", timeout=5000)
 
-            with context.expect_page(timeout=3000) as new_page_info:
-                locator.click(timeout=3000)
-
-            new_page = new_page_info.value
-            new_page.wait_for_load_state("domcontentloaded", timeout=15000)
-            new_page.wait_for_timeout(3000)
-
-            print(f"Clicked login target and new page opened: {target}", flush=True)
-            dump_page_debug(new_page, "NEW PAGE")
-            return new_page
-
-        except Exception:
             try:
-                locator = page.locator(target).first
-                locator.wait_for(state="visible", timeout=2000)
-                locator.click(timeout=3000)
-                print(f"Clicked login entry target on same page: {target}", flush=True)
-                page.wait_for_timeout(5000)
-                dump_page_debug(page, "POST-CLICK PAGE")
-                return page
+                with context.expect_page(timeout=5000) as new_page_info:
+                    locator.click(timeout=3000)
+                new_page = new_page_info.value
+                new_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                new_page.wait_for_timeout(5000)
+                log(f"Login opened a new page via: {target}")
+                return new_page
             except Exception:
-                pass
+                locator.click(timeout=3000)
+                page.wait_for_timeout(5000)
+                log(f"Login clicked on same page via: {target}")
+                return page
 
-    print("No separate login button found; continuing on current page", flush=True)
-    dump_page_debug(page, "CURRENT PAGE")
+        except Exception as e:
+            log(f"Login target failed: {target} | {e}")
+
+    log("No login target found; staying on current page")
     return page
 
 
-def fill_login_form(target):
+def inspect_for_login_fields(page):
+    log("\n--- INSPECTING MAIN PAGE FOR FIELDS ---")
+    selectors = [
+        'input[name="Email"]',
+        'input[name="email"]',
+        'input[type="email"]',
+        'input[autocomplete="username"]',
+        'input[type="text"]',
+        '#Email',
+        '#email',
+        'input[name="Password"]',
+        'input[name="password"]',
+        'input[type="password"]',
+        'input[autocomplete="current-password"]',
+        '#Password',
+        '#password',
+    ]
+
+    for selector in selectors:
+        try:
+            count = page.locator(selector).count()
+            log(f"Main page selector {selector} count: {count}")
+        except Exception as e:
+            log(f"Main page selector {selector} error: {e}")
+
+    list_frames(page)
+
+    log("\n--- INSPECTING FRAMES FOR FIELDS ---")
+    for i, frame in enumerate(page.frames):
+        for selector in selectors:
+            try:
+                count = frame.locator(selector).count()
+                if count > 0:
+                    log(f"Frame {i} selector {selector} count: {count}")
+            except Exception:
+                pass
+
+
+def try_fill_login(page):
+    candidates = [page] + list(page.frames)
+
     email_selectors = [
         'input[name="Email"]',
         'input[name="email"]',
@@ -246,47 +183,41 @@ def fill_login_form(target):
         '#password',
     ]
 
-    target.wait_for_timeout(5000)
-    target = get_login_capable_frame(target)
+    for idx, target in enumerate(candidates):
+        log(f"\nTrying target {idx} for login fill")
+        email_ok = False
+        password_ok = False
 
-    email_ok = False
-    password_ok = False
+        for selector in email_selectors:
+            try:
+                locator = target.locator(selector).first
+                locator.wait_for(state="visible", timeout=3000)
+                locator.fill(PRENOTAMI_EMAIL, timeout=3000)
+                log(f"Filled email using selector: {selector} on target {idx}")
+                email_ok = True
+                break
+            except Exception:
+                pass
 
-    for selector in email_selectors:
-        try:
-            print(f"Trying email selector: {selector}", flush=True)
-            locator = target.locator(selector).first
-            locator.wait_for(state="visible", timeout=10000)
-            locator.fill(PRENOTAMI_EMAIL, timeout=5000)
-            print(f"Filled email selector: {selector}", flush=True)
-            email_ok = True
-            break
-        except Exception as e:
-            print(f"Email selector failed: {selector} | {e}", flush=True)
+        for selector in password_selectors:
+            try:
+                locator = target.locator(selector).first
+                locator.wait_for(state="visible", timeout=3000)
+                locator.fill(PRENOTAMI_PASSWORD, timeout=3000)
+                log(f"Filled password using selector: {selector} on target {idx}")
+                password_ok = True
+                break
+            except Exception:
+                pass
 
-    for selector in password_selectors:
-        try:
-            print(f"Trying password selector: {selector}", flush=True)
-            locator = target.locator(selector).first
-            locator.wait_for(state="visible", timeout=10000)
-            locator.fill(PRENOTAMI_PASSWORD, timeout=5000)
-            print(f"Filled password selector: {selector}", flush=True)
-            password_ok = True
-            break
-        except Exception as e:
-            print(f"Password selector failed: {selector} | {e}", flush=True)
+        if email_ok and password_ok:
+            log(f"Successfully filled both fields on target {idx}")
+            return target
 
-    if not email_ok or not password_ok:
-        try:
-            snippet = normalize_text(target.content())[:1500]
-            print(f"LOGIN TARGET SNIPPET: {snippet}", flush=True)
-        except Exception as e:
-            print(f"Could not dump login target content: {e}", flush=True)
-
-        raise RuntimeError("Could not find login fields.")
+    raise RuntimeError("Could not find visible login fields on page or frames.")
 
 
-def submit_login(target):
+def try_submit_login(target):
     submit_selectors = [
         'button[type="submit"]',
         'input[type="submit"]',
@@ -294,87 +225,30 @@ def submit_login(target):
 
     for selector in submit_selectors:
         try:
-            print(f"Trying submit selector: {selector}", flush=True)
             target.locator(selector).first.click(timeout=3000)
-            print(f"Clicked submit selector: {selector}", flush=True)
+            log(f"Clicked submit selector: {selector}")
             return
-        except Exception as e:
-            print(f"Submit selector failed: {selector} | {e}", flush=True)
+        except Exception:
+            pass
 
     for label in ["Login", "Accedi", "Sign in"]:
         try:
-            print(f"Trying submit button label: {label}", flush=True)
             target.get_by_role("button", name=label).click(timeout=3000)
-            print(f"Clicked submit button label: {label}", flush=True)
+            log(f"Clicked submit button label: {label}")
             return
-        except Exception as e:
-            print(f"Submit button label failed: {label} | {e}", flush=True)
+        except Exception:
+            pass
 
     raise RuntimeError("Could not submit login form.")
 
 
-def try_click_if_exists(page, selectors):
-    for selector in selectors:
-        try:
-            print(f"Trying selector: {selector}", flush=True)
-            locator = page.locator(selector).first
-            locator.wait_for(state="visible", timeout=3000)
-            locator.click(timeout=3000)
-            print(f"Clicked selector: {selector}", flush=True)
-            return True
-        except Exception as e:
-            print(f"Selector failed: {selector} | {e}", flush=True)
-    return False
+def main():
+    validate_env()
 
-
-def open_san_francisco_visa_service(page) -> str:
-    print("Navigating to services page", flush=True)
-    page.goto(SERVICES_URL, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_load_state("networkidle", timeout=60000)
-    page.wait_for_timeout(3000)
-
-    services_text = normalize_text(page.content())
-    print("Loaded services page", flush=True)
-
-    visa_selectors = [
-        'a:has-text("Visa")',
-        'a:has-text("Visas")',
-        'a:has-text("National Visa")',
-        'a:has-text("Schengen")',
-        'a:has-text("Study")',
-        'a:has-text("Work")',
-        'button:has-text("Visa")',
-        'button:has-text("Visas")',
-        'text=Visa',
-        'text=Visas',
-        'text=Schengen',
-        'text=National Visa',
-        'text=Study',
-        'text=Work',
-    ]
-
-    clicked = try_click_if_exists(page, visa_selectors)
-
-    if clicked:
-        print("Visa-related service clicked", flush=True)
-        page.wait_for_load_state("networkidle", timeout=60000)
-        page.wait_for_timeout(3000)
-        return page.content()
-
-    if any(word in services_text for word in ["visa", "visas", "schengen", "study", "work"]):
-        print("Visa-related keywords found on services page without clicking", flush=True)
-        return page.content()
-
-    print(f"Services page snippet: {services_text[:1500]}", flush=True)
-    raise RuntimeError("Could not find a visa-related service on the Services page.")
-
-
-def login_and_check() -> str:
-    print("Launching Playwright", flush=True)
     with sync_playwright() as p:
-        print("Launching browser", flush=True)
         browser = p.chromium.launch(
-            headless=True,
+            headless=False,
+            slow_mo=500,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -382,129 +256,54 @@ def login_and_check() -> str:
             ],
         )
 
-        print("Creating browser context", flush=True)
         context = browser.new_context(
             user_agent=USER_AGENT,
             locale="en-US",
             viewport={"width": 1440, "height": 1000},
         )
 
-        print("Creating page", flush=True)
         page = context.new_page()
 
         try:
-            print("Opening login page", flush=True)
+            log("Opening homepage")
             page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(5000)
+            dump_page_debug(page, "HOME")
 
-            print("Handling cookie popup", flush=True)
             accept_cookies_if_present(page)
+            dump_page_debug(page, "AFTER_COOKIES")
 
-            print("Opening login form if needed", flush=True)
-            login_page = open_login_form_if_needed(context, page)
+            login_page = click_login_and_capture(context, page)
+            dump_page_debug(login_page, "AFTER_LOGIN_CLICK")
 
-            print("Filling login form", flush=True)
-            fill_login_form(login_page)
+            inspect_for_login_fields(login_page)
 
-            print("Submitting login form", flush=True)
-            submit_login(get_login_capable_frame(login_page))
+            target = try_fill_login(login_page)
+            dump_page_debug(login_page, "AFTER_FILL")
 
-            print("Waiting for post-login page", flush=True)
-            login_page.wait_for_load_state("networkidle", timeout=60000)
-            login_page.wait_for_timeout(5000)
+            try_submit_login(target)
+            login_page.wait_for_timeout(8000)
+            dump_page_debug(login_page, "AFTER_SUBMIT")
 
-            current_url = login_page.url.lower()
-            current_text = normalize_text(login_page.content())
+            log("\nNow trying to open Services page")
+            login_page.goto(SERVICES_URL, wait_until="domcontentloaded", timeout=60000)
+            login_page.wait_for_timeout(8000)
+            dump_page_debug(login_page, "SERVICES")
 
-            print(f"Current URL after login: {current_url}", flush=True)
-            print(f"Post-login page snippet: {current_text[:1500]}", flush=True)
-
-            if "login" in current_url and any(
-                x in current_text for x in ["invalid", "wrong", "errore", "password"]
-            ):
-                raise RuntimeError("Login failed. Check email/password.")
-
-            print("Opening San Francisco visa service", flush=True)
-            service_html = open_san_francisco_visa_service(login_page)
-
-            print("Detecting page state", flush=True)
-            state = detect_state_from_text(service_html)
-
-            print(f"Detected state inside login_and_check: {state}", flush=True)
-            browser.close()
-            return state
+            log("Done. Browser will stay open for 60 seconds.")
+            time.sleep(60)
 
         except PlaywrightTimeoutError:
-            browser.close()
-            raise RuntimeError("Timed out while loading Prenotami.")
-        except Exception:
-            browser.close()
-            raise
-
-
-def handle_state(state: str):
-    global last_state
-
-    print(f"Detected state: {state} | Previous: {last_state}", flush=True)
-
-    if state == last_state:
-        print("State unchanged. No alert sent.", flush=True)
-        return
-
-    if state == "possible":
-        send_telegram(
-            "🚨 San Francisco Prenotami: POSSIBLE APPOINTMENT AVAILABILITY detected.\n\n"
-            "Log in now:\nhttps://prenotami.esteri.it/"
-        )
-    elif state == "waitlist":
-        send_telegram(
-            "🟡 San Francisco Prenotami: WAITLIST detected.\n\n"
-            "Log in now:\nhttps://prenotami.esteri.it/"
-        )
-    elif state == "pending_confirmation":
-        send_telegram(
-            "✅ San Francisco Prenotami: PENDING CONFIRMATION detected.\n\n"
-            "Log in now:\nhttps://prenotami.esteri.it/"
-        )
-    elif state == "none":
-        print("No appointments available.", flush=True)
-    else:
-        send_telegram(
-            "ℹ️ San Francisco Prenotami: UNKNOWN state detected.\n\n"
-            "Please check manually:\nhttps://prenotami.esteri.it/"
-        )
-
-    last_state = state
-
-
-def main():
-    print("main() started", flush=True)
-    validate_env()
-    print("Environment validated", flush=True)
-
-    print("San Francisco Prenotami monitor started.", flush=True)
-    send_telegram("🤖 San Francisco Prenotami monitor started.")
-    print("Startup Telegram sent", flush=True)
-
-    while True:
-        print("Starting new check cycle", flush=True)
-        try:
-            state = login_and_check()
-            print(f"State returned from login_and_check: {state}", flush=True)
-            handle_state(state)
-        except Exception as e:
-            print(f"Check loop error: {e}", flush=True)
+            log("Timed out while loading page.")
             traceback.print_exc()
-
-        print(f"Sleeping for {CHECK_INTERVAL} seconds", flush=True)
-        time.sleep(CHECK_INTERVAL)
+            time.sleep(60)
+        except Exception as e:
+            log(f"Error: {e}")
+            traceback.print_exc()
+            time.sleep(60)
+        finally:
+            browser.close()
 
 
 if __name__ == "__main__":
-    try:
-        print("__main__ entered", flush=True)
-        main()
-    except Exception as e:
-        print(f"Fatal startup error: {e}", flush=True)
-        traceback.print_exc()
-        time.sleep(30)
+    main()
