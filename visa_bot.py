@@ -124,7 +124,62 @@ def accept_cookies_if_present(page):
     print("No cookie popup handled", flush=True)
 
 
-def open_login_form_if_needed(page):
+def dump_page_debug(page, label="PAGE"):
+    try:
+        print(f"{label} URL: {page.url}", flush=True)
+    except Exception:
+        pass
+
+    try:
+        print(f"{label} TITLE: {page.title()}", flush=True)
+    except Exception:
+        pass
+
+    try:
+        snippet = normalize_text(page.content())[:1500]
+        print(f"{label} SNIPPET: {snippet}", flush=True)
+    except Exception as e:
+        print(f"{label} SNIPPET ERROR: {e}", flush=True)
+
+
+def get_login_capable_frame(page):
+    print("Scanning main page and frames for login fields", flush=True)
+
+    candidates = [page]
+    try:
+        candidates.extend(page.frames)
+    except Exception:
+        pass
+
+    for idx, frame in enumerate(candidates):
+        try:
+            url = frame.url
+        except Exception:
+            url = "unknown"
+
+        print(f"Checking frame {idx} | URL: {url}", flush=True)
+
+        selectors = [
+            'input[type="password"]',
+            'input[type="email"]',
+            'input[name="Email"]',
+            'input[name="email"]',
+            'input[autocomplete="username"]',
+        ]
+
+        for selector in selectors:
+            try:
+                loc = frame.locator(selector).first
+                if loc.count() > 0:
+                    print(f"Found login-related selector in frame {idx}: {selector}", flush=True)
+                    return frame
+            except Exception:
+                pass
+
+    return page
+
+
+def open_login_form_if_needed(context, page):
     login_targets = [
         'a:has-text("Login")',
         'a:has-text("Accedi")',
@@ -134,22 +189,44 @@ def open_login_form_if_needed(page):
         'text=Accedi',
     ]
 
+    before_pages = len(context.pages)
+    print(f"Pages before login click: {before_pages}", flush=True)
+
     for target in login_targets:
         try:
             print(f"Trying login entry target: {target}", flush=True)
             locator = page.locator(target).first
             locator.wait_for(state="visible", timeout=3000)
-            locator.click(timeout=3000)
-            print(f"Clicked login entry target: {target}", flush=True)
-            page.wait_for_timeout(3000)
-            return
+
+            with context.expect_page(timeout=3000) as new_page_info:
+                locator.click(timeout=3000)
+
+            new_page = new_page_info.value
+            new_page.wait_for_load_state("domcontentloaded", timeout=15000)
+            new_page.wait_for_timeout(3000)
+
+            print(f"Clicked login target and new page opened: {target}", flush=True)
+            dump_page_debug(new_page, "NEW PAGE")
+            return new_page
+
         except Exception:
-            pass
+            try:
+                locator = page.locator(target).first
+                locator.wait_for(state="visible", timeout=2000)
+                locator.click(timeout=3000)
+                print(f"Clicked login entry target on same page: {target}", flush=True)
+                page.wait_for_timeout(5000)
+                dump_page_debug(page, "POST-CLICK PAGE")
+                return page
+            except Exception:
+                pass
 
     print("No separate login button found; continuing on current page", flush=True)
+    dump_page_debug(page, "CURRENT PAGE")
+    return page
 
 
-def fill_login_form(page):
+def fill_login_form(target):
     email_selectors = [
         'input[name="Email"]',
         'input[name="email"]',
@@ -169,7 +246,8 @@ def fill_login_form(page):
         '#password',
     ]
 
-    page.wait_for_timeout(5000)
+    target.wait_for_timeout(5000)
+    target = get_login_capable_frame(target)
 
     email_ok = False
     password_ok = False
@@ -177,8 +255,8 @@ def fill_login_form(page):
     for selector in email_selectors:
         try:
             print(f"Trying email selector: {selector}", flush=True)
-            locator = page.locator(selector).first
-            locator.wait_for(state="visible", timeout=8000)
+            locator = target.locator(selector).first
+            locator.wait_for(state="visible", timeout=10000)
             locator.fill(PRENOTAMI_EMAIL, timeout=5000)
             print(f"Filled email selector: {selector}", flush=True)
             email_ok = True
@@ -189,8 +267,8 @@ def fill_login_form(page):
     for selector in password_selectors:
         try:
             print(f"Trying password selector: {selector}", flush=True)
-            locator = page.locator(selector).first
-            locator.wait_for(state="visible", timeout=8000)
+            locator = target.locator(selector).first
+            locator.wait_for(state="visible", timeout=10000)
             locator.fill(PRENOTAMI_PASSWORD, timeout=5000)
             print(f"Filled password selector: {selector}", flush=True)
             password_ok = True
@@ -200,15 +278,15 @@ def fill_login_form(page):
 
     if not email_ok or not password_ok:
         try:
-            print(f"Page title: {page.title()}", flush=True)
-        except Exception:
-            pass
-        print(f"Current URL: {page.url}", flush=True)
-        print(f"Page snippet: {normalize_text(page.content())[:1200]}", flush=True)
+            snippet = normalize_text(target.content())[:1500]
+            print(f"LOGIN TARGET SNIPPET: {snippet}", flush=True)
+        except Exception as e:
+            print(f"Could not dump login target content: {e}", flush=True)
+
         raise RuntimeError("Could not find login fields.")
 
 
-def submit_login(page):
+def submit_login(target):
     submit_selectors = [
         'button[type="submit"]',
         'input[type="submit"]',
@@ -217,7 +295,7 @@ def submit_login(page):
     for selector in submit_selectors:
         try:
             print(f"Trying submit selector: {selector}", flush=True)
-            page.locator(selector).first.click(timeout=3000)
+            target.locator(selector).first.click(timeout=3000)
             print(f"Clicked submit selector: {selector}", flush=True)
             return
         except Exception as e:
@@ -226,7 +304,7 @@ def submit_login(page):
     for label in ["Login", "Accedi", "Sign in"]:
         try:
             print(f"Trying submit button label: {label}", flush=True)
-            page.get_by_role("button", name=label).click(timeout=3000)
+            target.get_by_role("button", name=label).click(timeout=3000)
             print(f"Clicked submit button label: {label}", flush=True)
             return
         except Exception as e:
@@ -287,7 +365,7 @@ def open_san_francisco_visa_service(page) -> str:
         print("Visa-related keywords found on services page without clicking", flush=True)
         return page.content()
 
-    print(f"Services page snippet: {services_text[:1200]}", flush=True)
+    print(f"Services page snippet: {services_text[:1500]}", flush=True)
     raise RuntimeError("Could not find a visa-related service on the Services page.")
 
 
@@ -323,23 +401,23 @@ def login_and_check() -> str:
             accept_cookies_if_present(page)
 
             print("Opening login form if needed", flush=True)
-            open_login_form_if_needed(page)
+            login_page = open_login_form_if_needed(context, page)
 
             print("Filling login form", flush=True)
-            fill_login_form(page)
+            fill_login_form(login_page)
 
             print("Submitting login form", flush=True)
-            submit_login(page)
+            submit_login(get_login_capable_frame(login_page))
 
             print("Waiting for post-login page", flush=True)
-            page.wait_for_load_state("networkidle", timeout=60000)
-            page.wait_for_timeout(5000)
+            login_page.wait_for_load_state("networkidle", timeout=60000)
+            login_page.wait_for_timeout(5000)
 
-            current_url = page.url.lower()
-            current_text = normalize_text(page.content())
+            current_url = login_page.url.lower()
+            current_text = normalize_text(login_page.content())
 
             print(f"Current URL after login: {current_url}", flush=True)
-            print(f"Post-login page snippet: {current_text[:1200]}", flush=True)
+            print(f"Post-login page snippet: {current_text[:1500]}", flush=True)
 
             if "login" in current_url and any(
                 x in current_text for x in ["invalid", "wrong", "errore", "password"]
@@ -347,7 +425,7 @@ def login_and_check() -> str:
                 raise RuntimeError("Login failed. Check email/password.")
 
             print("Opening San Francisco visa service", flush=True)
-            service_html = open_san_francisco_visa_service(page)
+            service_html = open_san_francisco_visa_service(login_page)
 
             print("Detecting page state", flush=True)
             state = detect_state_from_text(service_html)
