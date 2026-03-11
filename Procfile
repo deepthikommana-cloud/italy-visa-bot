@@ -1,1 +1,1 @@
-worker: python main.py
+worker: python -u visa_bot.py
